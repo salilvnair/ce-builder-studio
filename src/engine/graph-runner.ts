@@ -1183,6 +1183,23 @@ export async function executeGraph(opts: {
             outputs[n.id] = result;
           }
 
+          // ── Runtime output type validation ──────────────────────────
+          const outEdges = outgoing[n.id] || [];
+          for (const e of outEdges) {
+            const srcHandle = e.sourceHandle || 'out';
+            const srcPortTypes = (subBlockValues[n.id]?._portTypes || {}) as Record<string, string>;
+            const srcKey = srcHandle === 'out' ? 'out_out' : (srcHandle.startsWith('out_') ? srcHandle : `out_${srcHandle}`);
+            const declaredType = srcPortTypes[srcKey] || 'any';
+            const outVal = resolveEdgeOutput(e);
+            const rtErr = checkValueType(outVal, declaredType);
+            if (rtErr) {
+              const srcTitle = n.data?.title || n.id;
+              throw new Error(
+                `Output type error on "${srcTitle}": ${rtErr}`
+              );
+            }
+          }
+
           const ms = Date.now() - t0;
           trace.push({
             nodeId: n.id,
