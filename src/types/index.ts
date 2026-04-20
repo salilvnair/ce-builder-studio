@@ -57,6 +57,7 @@ export interface RunResult {
 export interface AgentRequest {
   agent: {
     id: string
+    provider?: string
     model?: string
     temperature?: number
     systemPrompt?: string

@@ -31,6 +31,7 @@ export interface TraceEntry {
   blockType?: string;
   title?: string;
   input: unknown;
+  inputsByHandle?: Record<string, unknown>;
   output?: unknown;
   values?: Record<string, unknown>;
   meta?: Record<string, unknown>;
@@ -143,18 +144,23 @@ async function runAgentNode(opts: {
   }
 
   const model = String(values.model || 'gpt-4o-mini');
+  const provider = values.provider ? String(values.provider) : undefined;
   const temperature = Number(values.temperature ?? 0.7);
   const systemPrompt = interpolateBag(String(values.systemPrompt || ''), bag);
   const userPrompt = interpolateBag(String(values.userPrompt || '{{input}}'), bag);
 
-  const agent = { id: String(values.id || opts.node.id), model, temperature, systemPrompt, userPrompt };
+  const agent = { id: String(values.id || opts.node.id), provider, model, temperature, systemPrompt, userPrompt };
   const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
 
   const res = await callAgent({ agent, input: inputStr });
 
   return {
-    __meta: { model, temperature, systemPrompt, userPrompt, rawAgentResponse: res },
-    value: (res as { output?: unknown })?.output ?? res,
+    __meta: { provider, model, temperature, systemPrompt, userPrompt, rawAgentResponse: res },
+    value: {
+      data: (res as { output?: unknown })?.output ?? res,
+      status: 200,
+      headers: { 'x-model': model, 'x-duration-ms': (res as { ms?: number })?.ms },
+    },
   };
 }
 
@@ -828,8 +834,9 @@ async function runNode(opts: {
   values: Record<string, unknown>;
   input: unknown;
   outputs: Record<string, unknown>;
+  inputsByHandle: Record<string, unknown>;
 }): Promise<unknown> {
-  const { node, values, input, outputs } = opts;
+  const { node, values, input, outputs, inputsByHandle } = opts;
   const blockType = node.data?.blockType;
 
   switch (blockType) {
@@ -838,7 +845,7 @@ async function runNode(opts: {
       return outputs[node.id];
 
     case 'response':
-      return interpolate(String(values.data ?? ''), outputs, input);
+      return runResponseNode({ values, input, inputsByHandle, outputs });
 
     case 'agent':
       return await runAgentNode({ node, values, input });
@@ -957,6 +964,26 @@ async function runNode(opts: {
       return input;
   }
 }
+function runResponseNode(opts: {
+  values: Record<string, unknown>;
+  input: unknown;
+  inputsByHandle: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+}): { data: unknown; status: number; headers: unknown } {
+  const { values, input, inputsByHandle, outputs } = opts;
+  const data = inputsByHandle?.data ?? (values.data ? interpolate(String(values.data), outputs, input) : input);
+  const status = inputsByHandle?.status != null ? Number(inputsByHandle.status) : (values.status ? Number(values.status) : 200);
+  let headers: unknown = inputsByHandle?.headers ?? null;
+  if (headers == null && values.headers) {
+    if (typeof values.headers === 'string') {
+      try { headers = JSON.parse(values.headers); } catch { headers = values.headers; }
+    } else {
+      headers = values.headers;
+    }
+  }
+  return { data, status, headers };
+}
+
 // --- Core Graph Executor -----------------------------------------------------
 
 export async function executeGraph(opts: {
@@ -1048,13 +1075,31 @@ export async function executeGraph(opts: {
 
         // Compute upstream inputs
         const inEdges = incoming[n.id] || [];
-        const upstream = inEdges.map((e) => outputs[e.source]);
+        // Resolve per-edge output: if the edge's sourceHandle is a named
+        // handle like "out_status", extract just that field from the source
+        // node's output object.
+        const resolveEdgeOutput = (e: { source: string; sourceHandle?: string }) => {
+          const full = outputs[e.source];
+          const sh = e.sourceHandle || 'out';
+          if (sh === 'out' || full == null || typeof full !== 'object') return full;
+          const field = sh.startsWith('out_') ? sh.slice(4) : sh;
+          return (field in (full as Record<string, unknown>)) ? (full as Record<string, unknown>)[field] : full;
+        };
+        const upstream = inEdges.map(resolveEdgeOutput);
         const input = upstream.length <= 1 ? upstream[0] : upstream;
+        // Build per-handle input map so blocks with multiple typed inputs
+        // (e.g. response: data, status, headers) can read from each handle.
+        const inputsByHandle: Record<string, unknown> = {};
+        for (const e of inEdges) {
+          const th = e.targetHandle || 'in';
+          const key = th.startsWith('in_') ? th.slice(3) : th;
+          inputsByHandle[key] = resolveEdgeOutput(e);
+        }
         const values = (subBlockValues[n.id] || {}) as Record<string, unknown>;
 
         const t0 = Date.now();
         try {
-          let result = await runNode({ node: n, values, input, outputs });
+          let result = await runNode({ node: n, values, input, outputs, inputsByHandle });
 
           let meta: Record<string, unknown> | undefined;
 
@@ -1085,6 +1130,7 @@ export async function executeGraph(opts: {
             blockType,
             title,
             input,
+            inputsByHandle,
             output: outputs[n.id],
             values,
             meta,
@@ -1098,6 +1144,7 @@ export async function executeGraph(opts: {
             blockType,
             title,
             input,
+            inputsByHandle,
             error: errorMsg,
             errorDetail: { stack: (err as Error).stack },
             ms,
