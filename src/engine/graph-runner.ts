@@ -230,7 +230,7 @@ async function runAgentNode(opts: {
   const responseFormat = values.responseFormat ? String(values.responseFormat) : null;
   const strictOutput = values.strictOutput === true;
 
-  const agent: Record<string, unknown> = {
+  const agent = {
     id: String(values.id || opts.node.id),
     provider, model, temperature, systemPrompt, userPrompt,
     responseFormat,
@@ -355,35 +355,36 @@ function runSwitchNode(opts: {
 function runJsonValidator(opts: {
   values: Record<string, unknown>;
   input: unknown;
-}): { valid: boolean; errors?: string[]; value: unknown } {
+}): { valid: boolean; errors: string[]; value: unknown } {
   const { values, input } = opts;
 
   let parsed: unknown = input;
   if (typeof input === 'string') {
-    try { parsed = JSON.parse(input); } catch {
-      return { valid: false, errors: ['Invalid JSON string'], value: input };
-    }
+    try { parsed = JSON.parse(input); }
+    catch { return { valid: false, errors: ['input is not valid JSON'], value: input }; }
   }
 
-  let rules: Array<{ field: string; type?: string; required?: boolean }> = [];
+  let rules: unknown[] = [];
   if (typeof values.rules === 'string') {
     try { rules = JSON.parse(values.rules); } catch { rules = []; }
   } else if (Array.isArray(values.rules)) {
-    rules = values.rules as Array<{ field: string; type?: string; required?: boolean }>;
+    rules = values.rules;
   }
 
   const errors: string[] = [];
-  for (const rule of rules) {
-    const fieldVal = jsonPath(parsed, rule.field);
-    if (rule.required && fieldVal === undefined) {
-      errors.push('Missing required field: ' + rule.field);
-    }
-    if (rule.type && fieldVal !== undefined && typeof fieldVal !== rule.type) {
-      errors.push('Field ' + rule.field + ' expected type ' + rule.type + ', got ' + typeof fieldVal);
-    }
+  for (const r of rules) {
+    // Support both object format { path, rule, value } and positional array [path, rule, value]
+    const path     = (r as Record<string, unknown>).path  ?? (Array.isArray(r) ? r[0] : undefined);
+    const ruleType = (r as Record<string, unknown>).rule  ?? (Array.isArray(r) ? r[1] : undefined);
+    const expected = (r as Record<string, unknown>).value ?? (Array.isArray(r) ? r[2] : undefined);
+    if (!path) continue;
+    const got = jsonPath(parsed, String(path));
+    if (ruleType === 'exists' && got === undefined) errors.push(`${path} missing`);
+    if (ruleType === 'equals' && String(got) !== String(expected)) errors.push(`${path} !== ${expected}`);
+    if (ruleType === 'type' && typeof got !== String(expected)) errors.push(`${path} not a ${expected}`);
   }
 
-  return { valid: errors.length === 0, errors: errors.length > 0 ? errors : undefined, value: parsed };
+  return { valid: errors.length === 0, errors, value: parsed };
 }
 
 function runJsonMapNode(opts: {
