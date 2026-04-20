@@ -1084,6 +1084,11 @@ async function runNode(opts: {
       return input;
     case 'mapper':
       return runMapperNode({ values, input });
+
+    // Skill blocks execute client-side JS — the server cannot run them.
+    // Pass the input through so the trace still records this node.
+    case 'skill':
+      return input;
     default:
       return input;
   }
