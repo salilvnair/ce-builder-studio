@@ -238,10 +238,11 @@ async function runAgentNode(opts: {
   };
   const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
 
-  const res = await callAgent({ agent, input: inputStr });
+  const llmRequest = { agent, input: inputStr };
+  const res = await callAgent(llmRequest);
 
   return {
-    __meta: { provider, model, temperature, systemPrompt, userPrompt, rawAgentResponse: res },
+    __meta: { provider, model, temperature, systemPrompt, userPrompt, rawAgentResponse: res, llmRequest, llmResponse: res },
     value: {
       data: (res as { output?: unknown })?.output ?? res,
       status: 200,
@@ -1106,6 +1107,44 @@ function runResponseNode(opts: {
   return { data, status, headers };
 }
 
+// --- GraphValidationError ----------------------------------------------------
+
+export class GraphValidationError extends Error {
+  nodeId: string | null;
+  nodeTitle: string | null;
+  blockType: string | null;
+  severity: string;
+  hint: string | null;
+  affectedNodes: Array<{ id: string; title: string; blockType?: string }>;
+  errorDetail: Record<string, unknown>;
+
+  constructor(message: string, details: {
+    nodeId?: string; nodeTitle?: string; blockType?: string;
+    severity?: string; hint?: string; cause?: string;
+    affectedNodes?: Array<{ id: string; title: string; blockType?: string }>;
+    extra?: Record<string, unknown>;
+  } = {}) {
+    super(message);
+    this.name = 'GraphValidationError';
+    this.nodeId = details.nodeId || null;
+    this.nodeTitle = details.nodeTitle || null;
+    this.blockType = details.blockType || null;
+    this.severity = details.severity || 'error';
+    this.hint = details.hint || null;
+    this.affectedNodes = details.affectedNodes || [];
+    this.errorDetail = {
+      message,
+      nodeId: this.nodeId,
+      nodeTitle: this.nodeTitle,
+      blockType: this.blockType,
+      cause: details.cause || null,
+      stack: this.stack,
+      timestamp: new Date().toISOString(),
+      ...details.extra,
+    };
+  }
+}
+
 // --- Core Graph Executor -----------------------------------------------------
 
 export async function executeGraph(opts: {
@@ -1115,10 +1154,10 @@ export async function executeGraph(opts: {
   const { workflow, inputs } = opts;
   const { nodes: allNodes, edges: allEdges, subBlockValues } = workflow;
 
-  // ── Filter out disabled nodes and their edges ────────────────────────
+  // ── Identify disabled nodes (they will pass-through input as output) ──
   const disabledIds = new Set(allNodes.filter((n) => n.data?.disabled).map((n) => n.id));
-  const nodes = allNodes.filter((n) => !disabledIds.has(n.id));
-  const edges = allEdges.filter((e) => !disabledIds.has(e.source) && !disabledIds.has(e.target));
+  const nodes = allNodes;
+  const edges = allEdges;
 
   // ── Compute reachable nodes from starter/user_input via edges ────────
   const reachable = new Set<string>();
@@ -1149,11 +1188,28 @@ export async function executeGraph(opts: {
   const seedTypes = new Set(['starter', 'user_input']);
   for (const n of nodes) {
     if (seedTypes.has(n.data?.blockType as string)) continue;
+    if (disabledIds.has(n.id)) continue;
     if (!reachable.has(n.id)) {
       const title = n.data?.title || n.data?.blockType || n.id;
-      throw new Error(
-        `"${title}" has no input connection. Only Start / User Input nodes can run without incoming edges. ` +
-        `Connect it to the graph or disable it (right-click → Disable).`
+      const allUnconnected = nodes
+        .filter((nd) => !seedTypes.has(nd.data?.blockType as string) && !disabledIds.has(nd.id) && !reachable.has(nd.id))
+        .map((nd) => ({ id: nd.id, title: (nd.data?.title || nd.data?.blockType || nd.id) as string, blockType: nd.data?.blockType as string }));
+      throw new GraphValidationError(
+        `"${title}" has no input connection — it is unreachable from any Start or User Input node.`,
+        {
+          nodeId: n.id,
+          nodeTitle: title as string,
+          blockType: n.data?.blockType as string,
+          cause: 'No incoming edges found. The graph executor can only run nodes that are connected downstream from a Start or User Input node.',
+          hint: 'Connect an edge from another block\'s output to this block\'s input, or disable it (right-click → Disable).',
+          affectedNodes: allUnconnected,
+          extra: {
+            totalNodes: nodes.length,
+            totalEdges: edges.length,
+            reachableCount: reachable.size,
+            unreachableNodes: allUnconnected,
+          },
+        }
       );
     }
   }
@@ -1264,6 +1320,20 @@ export async function executeGraph(opts: {
 
         const t0 = Date.now();
         try {
+          // ── Disabled node: pass-through input → output (ComfyUI-style) ──
+          if (disabledIds.has(n.id)) {
+            outputs[n.id] = input;
+            trace.push({
+              nodeId: n.id,
+              blockType: blockType as string,
+              title: title as string,
+              input,
+              output: input,
+              ms: Date.now() - t0,
+            });
+            return;
+          }
+
           // ── Runtime port type validation ──────────────────────────────
           for (const e of inEdges) {
             const srcType = resolvePortTypeTS(e.source, e.sourceHandle || 'out', 'source', subBlockValues, nodes);
@@ -1321,8 +1391,15 @@ export async function executeGraph(opts: {
             const rtErr = checkValueType(outVal, declaredType);
             if (rtErr) {
               const srcTitle = n.data?.title || n.id;
-              throw new Error(
-                `Output type error on "${srcTitle}": ${rtErr}`
+              throw new GraphValidationError(
+                `Output type error on "${srcTitle}": ${rtErr}`,
+                {
+                  nodeId: n.id,
+                  nodeTitle: srcTitle as string,
+                  blockType: n.data?.blockType as string,
+                  cause: `Port "${srcHandle}" produced a value that doesn't match its declared type "${declaredType}".`,
+                  hint: `Check the output of "${srcTitle}" — the port expects ${declaredType}.`,
+                }
               );
             }
           }
