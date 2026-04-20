@@ -10,6 +10,7 @@ import workspaceRoutes from './routes/workspace.js'
 import mcpRoutes from './routes/mcp.js'
 import healthRoutes from './routes/health.js'
 import deployRoutes from './routes/deploy.js'
+import providerRoutes from './routes/provider.js'
 
 async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -41,6 +42,7 @@ async function buildServer(): Promise<FastifyInstance> {
     await api.register(runRoutes)
     await api.register(workspaceRoutes)
     await api.register(mcpRoutes)
+    await api.register(providerRoutes)
     await api.register(deployRoutes)
   }, { prefix: '/api/v1' })
 

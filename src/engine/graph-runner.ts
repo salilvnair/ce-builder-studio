@@ -304,18 +304,48 @@ function runJsonMapNode(opts: {
     try { parsed = JSON.parse(input); } catch { return input; }
   }
 
-  let mappings: Array<{ key: string; path: string }> = [];
-  if (typeof values.mappings === 'string') {
-    try { mappings = JSON.parse(values.mappings); } catch { mappings = []; }
-  } else if (Array.isArray(values.mappings)) {
-    mappings = values.mappings as Array<{ key: string; path: string }>;
-  }
+  // Resolve mappings from table rows (mappingPairs) or raw JSON (mappings).
+  const mappings = resolveMappings(values.mappingPairs, values.mappings);
 
   const result: Record<string, unknown> = {};
   for (const m of mappings) {
     result[m.key] = jsonPath(parsed, m.path);
   }
   return result;
+}
+
+/**
+ * Resolve json_map mappings from either table rows or a raw JSON string/array.
+ * Table rows are arrays of [key, path]. JSON can be a string or parsed array
+ * of { key, path } objects.
+ */
+function resolveMappings(
+  tableRows: unknown,
+  rawMappings: unknown,
+): Array<{ key: string; path: string }> {
+  // Table rows take precedence when they have content.
+  if (Array.isArray(tableRows) && tableRows.length > 0) {
+    const fromTable = tableRows
+      .map((row: unknown) => {
+        if (!Array.isArray(row)) return null;
+        const key = String(row[0] ?? '').trim();
+        const path = String(row[1] ?? '').trim();
+        if (!key) return null;
+        return { key, path: path || '$' };
+      })
+      .filter((m): m is { key: string; path: string } => m !== null);
+    if (fromTable.length > 0) return fromTable;
+  }
+
+  // Fall back to raw JSON (advanced mode or legacy workflows).
+  if (!rawMappings) return [];
+  if (typeof rawMappings === 'string') {
+    try { return JSON.parse(rawMappings); } catch { return []; }
+  }
+  if (Array.isArray(rawMappings)) {
+    return rawMappings as Array<{ key: string; path: string }>;
+  }
+  return [];
 }
 
 function runTextTemplateNode(opts: {
@@ -951,17 +981,19 @@ export async function executeGraph(opts: {
   const started = new Set<string>();
   const chosenHandle: Record<string, string | null> = {};
 
-  // Seed starter and user_input nodes
+  // Seed starter and user_input nodes.
+  // Use key-presence checks so falsy typed values (false, 0, '') are preserved.
   for (const n of nodes) {
     const blockType = n.data?.blockType;
     if (blockType === 'user_input') {
-      outputs[n.id] = inputs[n.id] ?? '';
+      const hasInput = Object.prototype.hasOwnProperty.call(inputs || {}, n.id);
+      outputs[n.id] = hasInput ? inputs[n.id] : null;
       started.add(n.id);
       trace.push({
         nodeId: n.id,
         blockType,
         title: n.data?.title,
-        input: inputs[n.id] ?? '',
+        input: hasInput ? inputs[n.id] : null,
         output: outputs[n.id],
         ms: 0,
       });
