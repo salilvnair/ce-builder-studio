@@ -35,13 +35,17 @@ async function buildServer(): Promise<FastifyInstance> {
     },
   )
 
-  // -- Routes (registered at root; route files already define full paths) --
-  await app.register(agentRoutes)
-  await app.register(runRoutes)
-  await app.register(workspaceRoutes)
-  await app.register(mcpRoutes)
+  // -- Routes (all under /api/v1 to match convengine-demo convention) --
+  await app.register(async function apiV1(api) {
+    await api.register(agentRoutes)
+    await api.register(runRoutes)
+    await api.register(workspaceRoutes)
+    await api.register(mcpRoutes)
+    await api.register(deployRoutes)
+  }, { prefix: '/api/v1' })
+
+  // Health check stays at root
   await app.register(healthRoutes)
-  await app.register(deployRoutes)
 
   return app
 }
