@@ -291,8 +291,9 @@ function runFunctionNode(opts: {
   const { values, input } = opts;
   const src = String(values.code || 'return input');
   try {
-    const fn = new Function('input', src);
-    return fn(input);
+    // Pass `values` as second arg to match client (allows scripts to read block config)
+    const fn = new Function('input', 'values', src);
+    return fn(input, values);
   } catch (err) {
     throw new Error('Function node error: ' + (err as Error).message);
   }
@@ -303,7 +304,8 @@ function runIfElseNode(opts: {
   input: unknown;
 }): { branch: string; value: unknown } {
   const { values, input } = opts;
-  const expr = String(values.condition || 'true');
+  // Support both `expression` (client inspector field) and legacy `condition`
+  const expr = String(values.expression || values.condition || 'true');
   const result = evalSafe(expr, input);
   return { branch: result ? 'true' : 'false', value: input };
 }
@@ -313,18 +315,17 @@ function runIfElseIfElseNode(opts: {
   input: unknown;
 }): { branch: string; value: unknown } {
   const { values, input } = opts;
-  let branches: Array<{ condition: string; handle: string }> = [];
-
-  if (typeof values.branches === 'string') {
-    try { branches = JSON.parse(values.branches); } catch { branches = []; }
-  } else if (Array.isArray(values.branches)) {
-    branches = values.branches as Array<{ condition: string; handle: string }>;
-  }
-
-  for (const b of branches) {
-    const result = evalSafe(b.condition, input);
-    if (result) {
-      return { branch: b.handle, value: input };
+  // Matches client format: rows in `values.conditions` ({label, expression} or [label, expression]),
+  // count in `values.branches` (number), handles named branch_1, branch_2, ..., else.
+  const rows: unknown[] = Array.isArray(values.conditions) ? values.conditions : [];
+  const n = Math.max(1, Math.min(8, Number(values.branches) || rows.length || 2));
+  for (let i = 0; i < n; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const expr = (row as Record<string, unknown>).expression ?? (Array.isArray(row) ? (row as unknown[])[1] : undefined);
+    if (!expr) continue;
+    if (evalSafe(String(expr), input)) {
+      return { branch: `branch_${i + 1}`, value: input };
     }
   }
   return { branch: 'else', value: input };
@@ -335,18 +336,17 @@ function runSwitchNode(opts: {
   input: unknown;
 }): { branch: string; value: unknown } {
   const { values, input } = opts;
-  const keyVal = evalSafe(String(values.key || 'input'), input);
+  // Matches client: `values.keyExpr` for the key expression, `case_N` handles.
+  const keyVal = values.keyExpr ? evalSafe(String(values.keyExpr), input) : input;
+  const key = String(keyVal);
 
-  let cases: Array<{ value: unknown; handle: string }> = [];
-  if (typeof values.cases === 'string') {
-    try { cases = JSON.parse(values.cases); } catch { cases = []; }
-  } else if (Array.isArray(values.cases)) {
-    cases = values.cases as Array<{ value: unknown; handle: string }>;
-  }
-
-  for (const c of cases) {
-    if (c.value == keyVal) {
-      return { branch: c.handle, value: input };
+  const cases: unknown[] = Array.isArray(values.cases) ? values.cases : [];
+  const n = Math.max(1, Math.min(12, Number(values.caseCount) || cases.length || 3));
+  for (let i = 0; i < Math.min(n, cases.length); i++) {
+    const c = cases[i] as Record<string, unknown>;
+    const match = c.value ?? c.match ?? (Array.isArray(cases[i]) ? (cases[i] as unknown[])[0] : undefined);
+    if (match != null && String(match) === key) {
+      return { branch: `case_${i + 1}`, value: input };
     }
   }
   return { branch: 'default', value: input };
@@ -469,7 +469,12 @@ function runJsonPathNode(opts: {
   }
 
   const path = String(values.path || '');
-  return jsonPath(parsed, path);
+  const result = jsonPath(parsed, path);
+  // Match client: support fallback value when result is undefined
+  if ((result === undefined || result === null) && values.fallback != null && values.fallback !== '') {
+    return values.fallback;
+  }
+  return result !== undefined ? result : null;
 }
 
 /* ── Mapper block — type conversion ────────────────────────────────────────── */
