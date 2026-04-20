@@ -87,6 +87,55 @@ function checkValueType(value: unknown, expectedType: string): string | null {
   }
 }
 
+// ─── Card port defaults (mirrors io-registry cardPortOverrides) ─────────────
+// Used for runtime type resolution when _portTypes has no user override.
+interface PortDef { key: string; type: string }
+const CARD_PORT_DEFAULTS: Record<string, { inputs: PortDef[]; outputs: PortDef[] }> = {
+  agent:         { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'data', type: 'string' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
+  function:      { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'json' }] },
+  response:      { inputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }], outputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
+  api:           { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
+  mapper:        { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }] },
+  filter:        { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'kept', type: 'json' }, { key: 'rejected', type: 'json' }] },
+  merge:         { inputs: [{ key: 'input1', type: 'any' }, { key: 'input2', type: 'any' }], outputs: [{ key: 'merged', type: 'json' }] },
+  error_handler: { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }, { key: 'error', type: 'json' }] },
+  ai_classifier: { inputs: [{ key: 'input', type: 'string' }], outputs: [{ key: 'category', type: 'string' }, { key: 'confidence', type: 'number' }] },
+  user_input:    { inputs: [], outputs: [{ key: 'value', type: 'string' }] },
+};
+
+function resolvePortTypeTS(
+  nodeId: string,
+  handleId: string,
+  side: 'source' | 'target',
+  subBlockValues: Record<string, Record<string, unknown>>,
+  nodes: WorkflowNode[],
+): string {
+  const nodeData = nodes.find((nd) => nd.id === nodeId)?.data;
+  if (!nodeData) return 'any';
+  const blockType = nodeData.blockType as string;
+  const portTypes = ((subBlockValues[nodeId] || {})._portTypes || {}) as Record<string, string>;
+  const card = CARD_PORT_DEFAULTS[blockType];
+
+  if (side === 'target') {
+    if (portTypes[handleId]) return portTypes[handleId];
+    const key = handleId.startsWith('in_') ? handleId.slice(3) : null;
+    if (key && card) {
+      const port = card.inputs.find((p) => p.key === key);
+      if (port) return port.type;
+    }
+    return 'any';
+  } else {
+    const ptKey = handleId === 'out' ? 'out_out' : (handleId.startsWith('out_') ? handleId : `out_${handleId}`);
+    if (portTypes[ptKey]) return portTypes[ptKey];
+    const key = handleId === 'out' ? null : (handleId.startsWith('out_') ? handleId.slice(4) : handleId);
+    if (key && card) {
+      const port = card.outputs.find((p) => p.key === key);
+      if (port) return port.type;
+    }
+    return 'any';
+  }
+}
+
 function jsonPath(obj: unknown, path: string): unknown {
   const parts = path.split('.');
   let current: unknown = obj;
@@ -178,8 +227,15 @@ async function runAgentNode(opts: {
   const temperature = Number(values.temperature ?? 0.7);
   const systemPrompt = interpolateBag(String(values.systemPrompt || ''), bag);
   const userPrompt = interpolateBag(String(values.userPrompt || '{{input}}'), bag);
+  const responseFormat = values.responseFormat ? String(values.responseFormat) : null;
+  const strictOutput = values.strictOutput === true;
 
-  const agent = { id: String(values.id || opts.node.id), provider, model, temperature, systemPrompt, userPrompt };
+  const agent: Record<string, unknown> = {
+    id: String(values.id || opts.node.id),
+    provider, model, temperature, systemPrompt, userPrompt,
+    responseFormat,
+    strictOutput,
+  };
   const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
 
   const res = await callAgent({ agent, input: inputStr });
@@ -413,6 +469,40 @@ function runJsonPathNode(opts: {
   const path = String(values.path || '');
   return jsonPath(parsed, path);
 }
+
+/* ── Mapper block — type conversion ────────────────────────────────────────── */
+function runMapperNode(opts: {
+  values: Record<string, unknown>;
+  input: unknown;
+}): unknown {
+  const { values, input } = opts;
+  const mode = String(values.mode || 'json_parse');
+  switch (mode) {
+    case 'json_parse': {
+      if (typeof input === 'object' && input !== null) return input;
+      if (typeof input !== 'string') return input;
+      try { return JSON.parse(input); } catch { throw new Error('Mapper: input is not valid JSON'); }
+    }
+    case 'json_stringify':
+      return typeof input === 'string' ? input : JSON.stringify(input);
+    case 'to_number': {
+      const n = Number(input);
+      if (Number.isNaN(n)) throw new Error(`Mapper: cannot convert "${String(input).slice(0, 50)}" to number`);
+      return n;
+    }
+    case 'to_boolean':
+      if (typeof input === 'boolean') return input;
+      if (input === 'true' || input === '1') return true;
+      if (input === 'false' || input === '0' || input === '' || input == null) return false;
+      return Boolean(input);
+    case 'to_string':
+      if (typeof input === 'string') return input;
+      return input == null ? '' : (typeof input === 'object' ? JSON.stringify(input) : String(input));
+    default:
+      return input;
+  }
+}
+
 async function runApiNode(opts: {
   values: Record<string, unknown>;
   input: unknown;
@@ -990,6 +1080,8 @@ async function runNode(opts: {
 
     case 'table':
       return input;
+    case 'mapper':
+      return runMapperNode({ values, input });
     default:
       return input;
   }
@@ -1021,12 +1113,49 @@ export async function executeGraph(opts: {
   inputs: Record<string, unknown>;
 }): Promise<RunResult> {
   const { workflow, inputs } = opts;
-  const { nodes, edges, subBlockValues } = workflow;
+  const { nodes: allNodes, edges: allEdges, subBlockValues } = workflow;
+
+  // ── Filter out disabled nodes and their edges ────────────────────────
+  const disabledIds = new Set(allNodes.filter((n) => n.data?.disabled).map((n) => n.id));
+  const nodes = allNodes.filter((n) => !disabledIds.has(n.id));
+  const edges = allEdges.filter((e) => !disabledIds.has(e.source) && !disabledIds.has(e.target));
+
+  // ── Compute reachable nodes from starter/user_input via edges ────────
+  const reachable = new Set<string>();
+  const outgoingAll: Record<string, WorkflowEdge[]> = {};
+  for (const e of edges) {
+    if (!outgoingAll[e.source]) outgoingAll[e.source] = [];
+    outgoingAll[e.source].push(e);
+  }
+  const seedIds = nodes
+    .filter((n) => n.data?.blockType === 'starter' || n.data?.blockType === 'user_input')
+    .map((n) => n.id);
+  const bfsQueue = [...seedIds];
+  for (const id of bfsQueue) {
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    for (const e of (outgoingAll[id] || [])) {
+      if (!reachable.has(e.target)) bfsQueue.push(e.target);
+    }
+  }
 
   // Build lookup maps
   const nodesById: Record<string, WorkflowNode> = {};
   for (const n of nodes) {
     nodesById[n.id] = n;
+  }
+
+  // ── Validate: non-seed nodes must be reachable from Start ────────────
+  const seedTypes = new Set(['starter', 'user_input']);
+  for (const n of nodes) {
+    if (seedTypes.has(n.data?.blockType as string)) continue;
+    if (!reachable.has(n.id)) {
+      const title = n.data?.title || n.data?.blockType || n.id;
+      throw new Error(
+        `"${title}" has no input connection. Only Start / User Input nodes can run without incoming edges. ` +
+        `Connect it to the graph or disable it (right-click → Disable).`
+      );
+    }
   }
 
   const outgoing = groupBy(edges, 'source' as keyof WorkflowEdge);
@@ -1086,6 +1215,7 @@ export async function executeGraph(opts: {
     const ready: WorkflowNode[] = [];
     for (const n of nodes) {
       if (started.has(n.id)) continue;
+      if (!reachable.has(n.id)) continue;
       const inEdges = incoming[n.id];
       if (!inEdges || inEdges.length === 0) continue;
       const allLive = inEdges.every(edgeIsLive);
@@ -1107,7 +1237,8 @@ export async function executeGraph(opts: {
         const inEdges = incoming[n.id] || [];
         // Resolve per-edge output: if the edge's sourceHandle is a named
         // handle like "out_status", extract just that field from the source
-        // node's output object.
+        // node's output object. Legacy "out" on multi-output blocks resolves
+        // to the first output port's key.
         const resolveEdgeOutput = (e: { source: string; sourceHandle?: string }) => {
           const full = outputs[e.source];
           const sh = e.sourceHandle || 'out';
@@ -1122,7 +1253,10 @@ export async function executeGraph(opts: {
         const inputsByHandle: Record<string, unknown> = {};
         for (const e of inEdges) {
           const th = e.targetHandle || 'in';
-          const key = th.startsWith('in_') ? th.slice(3) : th;
+          // Normalize legacy "in" handle → "input" key (most blocks' first port)
+          const key = th === 'in' ? 'input' : (th.startsWith('in_') ? th.slice(3) : th);
+          // Skip duplicate: if a proper in_* edge already wrote this key, don't overwrite
+          if (key in inputsByHandle) continue;
           inputsByHandle[key] = resolveEdgeOutput(e);
         }
 
@@ -1132,14 +1266,9 @@ export async function executeGraph(opts: {
         try {
           // ── Runtime port type validation ──────────────────────────────
           for (const e of inEdges) {
-            const srcPortTypes = (subBlockValues[e.source]?._portTypes || {}) as Record<string, string>;
-            const tgtPortTypes = (subBlockValues[n.id]?._portTypes || {}) as Record<string, string>;
-            const sh = e.sourceHandle || 'out';
+            const srcType = resolvePortTypeTS(e.source, e.sourceHandle || 'out', 'source', subBlockValues, nodes);
             const th = e.targetHandle || 'in';
-            const srcKey = sh === 'out' ? 'out' : (sh.startsWith('out_') ? sh : `out_${sh}`);
-            const tgtKey = th === 'in' ? 'in' : (th.startsWith('in_') ? th : `in_${th}`);
-            const srcType = srcPortTypes[srcKey] || 'any';
-            const tgtType = tgtPortTypes[tgtKey] || 'any';
+            const tgtType = resolvePortTypeTS(n.id, th, 'target', subBlockValues, nodes);
             if (!isRuntimeTypeCompatible(srcType, tgtType)) {
               const srcTitle = nodesById[e.source]?.data?.title || e.source;
               const tgtTitle = n.data?.title || n.id;
@@ -1187,9 +1316,7 @@ export async function executeGraph(opts: {
           const outEdges = outgoing[n.id] || [];
           for (const e of outEdges) {
             const srcHandle = e.sourceHandle || 'out';
-            const srcPortTypes = (subBlockValues[n.id]?._portTypes || {}) as Record<string, string>;
-            const srcKey = srcHandle === 'out' ? 'out_out' : (srcHandle.startsWith('out_') ? srcHandle : `out_${srcHandle}`);
-            const declaredType = srcPortTypes[srcKey] || 'any';
+            const declaredType = resolvePortTypeTS(n.id, srcHandle, 'source', subBlockValues, nodes);
             const outVal = resolveEdgeOutput(e);
             const rtErr = checkValueType(outVal, declaredType);
             if (rtErr) {
