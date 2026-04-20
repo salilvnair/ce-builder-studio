@@ -57,6 +57,36 @@ function groupBy<T>(arr: T[], key: keyof T): Record<string, T[]> {
   return map;
 }
 
+// ─── Runtime type validation helpers ─────────────────────────────────────────
+const _compat: Record<string, Set<string>> = {
+  string:  new Set(['string', 'any']),
+  number:  new Set(['number', 'any']),
+  boolean: new Set(['boolean', 'any']),
+  json:    new Set(['json', 'array', 'any']),
+  array:   new Set(['array', 'any']),
+  any:     new Set(['string', 'number', 'boolean', 'json', 'array', 'any']),
+};
+
+function isRuntimeTypeCompatible(sourceType: string, targetType: string): boolean {
+  const src = sourceType || 'any';
+  const tgt = targetType || 'any';
+  if (src === 'any' || tgt === 'any') return true;
+  return (_compat[src] || _compat.any).has(tgt);
+}
+
+function checkValueType(value: unknown, expectedType: string): string | null {
+  if (!expectedType || expectedType === 'any') return null;
+  if (value == null) return null;
+  switch (expectedType) {
+    case 'string':  return typeof value !== 'string'  ? `expected string, got ${typeof value}` : null;
+    case 'number':  return typeof value !== 'number'  ? `expected number, got ${typeof value}` : null;
+    case 'boolean': return typeof value !== 'boolean' ? `expected boolean, got ${typeof value}` : null;
+    case 'json':    return (typeof value !== 'object' || Array.isArray(value)) ? `expected json object, got ${Array.isArray(value) ? 'array' : typeof value}` : null;
+    case 'array':   return !Array.isArray(value) ? `expected array, got ${typeof value}` : null;
+    default:        return null;
+  }
+}
+
 function jsonPath(obj: unknown, path: string): unknown {
   const parts = path.split('.');
   let current: unknown = obj;
@@ -1095,10 +1125,39 @@ export async function executeGraph(opts: {
           const key = th.startsWith('in_') ? th.slice(3) : th;
           inputsByHandle[key] = resolveEdgeOutput(e);
         }
+
         const values = (subBlockValues[n.id] || {}) as Record<string, unknown>;
 
         const t0 = Date.now();
         try {
+          // ── Runtime port type validation ──────────────────────────────
+          for (const e of inEdges) {
+            const srcPortTypes = (subBlockValues[e.source]?._portTypes || {}) as Record<string, string>;
+            const tgtPortTypes = (subBlockValues[n.id]?._portTypes || {}) as Record<string, string>;
+            const sh = e.sourceHandle || 'out';
+            const th = e.targetHandle || 'in';
+            const srcKey = sh === 'out' ? 'out' : (sh.startsWith('out_') ? sh : `out_${sh}`);
+            const tgtKey = th === 'in' ? 'in' : (th.startsWith('in_') ? th : `in_${th}`);
+            const srcType = srcPortTypes[srcKey] || 'any';
+            const tgtType = tgtPortTypes[tgtKey] || 'any';
+            if (!isRuntimeTypeCompatible(srcType, tgtType)) {
+              const srcTitle = nodesById[e.source]?.data?.title || e.source;
+              const tgtTitle = n.data?.title || n.id;
+              throw new Error(
+                `Type mismatch: "${srcTitle}" output (${srcType}) is not compatible with "${tgtTitle}" input (${tgtType})`
+              );
+            }
+            const val = resolveEdgeOutput(e);
+            const rtErr = checkValueType(val, tgtType);
+            if (rtErr) {
+              const srcTitle = nodesById[e.source]?.data?.title || e.source;
+              const tgtTitle = n.data?.title || n.id;
+              throw new Error(
+                `Runtime type error: "${srcTitle}" → "${tgtTitle}": ${rtErr}`
+              );
+            }
+          }
+
           let result = await runNode({ node: n, values, input, outputs, inputsByHandle });
 
           let meta: Record<string, unknown> | undefined;
