@@ -1251,15 +1251,19 @@ export async function executeGraph(opts: {
         ms: 0,
       });
     } else if (blockType === 'starter') {
-      outputs[n.id] = null;
+      // In chat mode the browser passes inputs.__chat__ = { message, history }.
+      // Seed the starter with that payload so downstream nodes receive it as input.
+      const chatPayload = (inputs as Record<string, unknown>).__chat__ ?? null;
+      outputs[n.id] = chatPayload;
       started.add(n.id);
       trace.push({
         nodeId: n.id,
         blockType,
         title: n.data?.title,
         input: null,
-        output: null,
+        output: chatPayload,
         ms: 0,
+        ...(chatPayload ? { meta: { source: 'chat message' } } : {}),
       });
     }
   }
