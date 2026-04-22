@@ -222,7 +222,22 @@ async function runAgentNode(opts: {
     bag['input'] = String(input ?? '');
   }
 
-  const model = String(values.model || 'gpt-4o-mini');
+  const rawModel = values.model ? String(values.model) : null;
+  if (!rawModel) {
+    const nodeTitle = String((opts.node.data?.title) || opts.node.id);
+    throw new GraphValidationError(
+      `No model provider configured for "${nodeTitle}"`,
+      {
+        nodeId: opts.node.id,
+        nodeTitle,
+        blockType: 'agent',
+        cause: 'No model is set on this agent node and no default has been saved. The server-side graph runner cannot fall back to a hardcoded model.',
+        hint: 'Open Settings → LLM Provider Configuration, select a default model and save, then re-deploy the workflow.',
+        severity: 'error',
+      }
+    );
+  }
+  const model = rawModel;
   const provider = values.provider ? String(values.provider) : undefined;
   const temperature = Number(values.temperature ?? 0.7);
   const systemPrompt = interpolateBag(String(values.systemPrompt || ''), bag);
@@ -798,6 +813,8 @@ function runCryptoNode(opts: {
   switch (operation) {
     case 'sha256':
       return { result: createHash('sha256').update(data).digest('hex') };
+    case 'sha512':
+      return { result: createHash('sha512').update(data).digest('hex') };
     case 'md5':
       return { result: createHash('md5').update(data).digest('hex') };
     case 'base64_encode':
@@ -860,7 +877,22 @@ async function runAiClassifierNode(opts: {
   const categories = String(values.categories || '').split(',').map((c) => c.trim()).filter(Boolean);
   const text = String(values.text || (typeof input === 'string' ? input : JSON.stringify(input)));
   const instructions = String(values.instructions || '');
-  const model = String(values.model || 'gpt-4o-mini');
+  const rawModel = values.model ? String(values.model) : null;
+  if (!rawModel) {
+    const nodeTitle = String((opts.node.data?.title) || opts.node.id);
+    throw new GraphValidationError(
+      `No model provider configured for AI Classifier "${nodeTitle}"`,
+      {
+        nodeId: opts.node.id,
+        nodeTitle,
+        blockType: 'ai_classifier',
+        cause: 'No model is set on this AI Classifier node and no default has been saved.',
+        hint: 'Open Settings → LLM Provider Configuration, select a default model and save, then re-deploy.',
+        severity: 'error',
+      }
+    );
+  }
+  const model = rawModel;
 
   const systemPrompt =
     'You are a text classifier. Classify the given text into exactly one of these categories: ' +
@@ -927,7 +959,22 @@ async function runRouterV2Node(opts: {
 }): Promise<{ branch: string; value: unknown }> {
   const { values, input } = opts;
   const context = String(values.context || (typeof input === 'string' ? input : JSON.stringify(input)));
-  const model = String(values.model || 'gpt-4o-mini');
+  const rawModel = values.model ? String(values.model) : null;
+  if (!rawModel) {
+    const nodeTitle = String((opts.node.data?.title) || opts.node.id);
+    throw new GraphValidationError(
+      `No model provider configured for Router V2 "${nodeTitle}"`,
+      {
+        nodeId: opts.node.id,
+        nodeTitle,
+        blockType: 'router_v2',
+        cause: 'No model is set on this Router V2 node and no default has been saved.',
+        hint: 'Open Settings → LLM Provider Configuration, select a default model and save, then re-deploy.',
+        severity: 'error',
+      }
+    );
+  }
+  const model = rawModel;
   let routes: Array<{ id: string; description: string }> = [];
   if (typeof values.routes === 'string') {
     try { routes = JSON.parse(values.routes); } catch { routes = []; }
