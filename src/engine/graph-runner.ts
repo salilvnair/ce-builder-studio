@@ -1037,11 +1037,13 @@ async function runNode(opts: {
       return runIfElseIfElseNode({ values, input });
 
     case 'switch':
+    case 'switch_case':
       return runSwitchNode({ values, input });
 
     case 'for_loop':
+      throw new Error('For Loop block: loop expansion is not yet implemented in ce-builder-studio.');
     case 'for_each':
-      return input;
+      throw new Error('For Each block: loop iteration is not yet implemented in ce-builder-studio.');
 
     case 'json_validator':
       return runJsonValidator({ values, input });
@@ -1099,25 +1101,25 @@ async function runNode(opts: {
       return await runAiClassifierNode({ node, values, input });
 
     case 'slack':
-      return { ok: false, error: 'Slack integration requires server-side execution via convengine' };
+      throw new Error('Slack block: not yet implemented in ce-builder-studio. Configure SLACK_BOT_TOKEN and add the Slack connector.');
 
     case 'smtp':
-      return { success: false, error: 'SMTP requires server-side execution via convengine' };
+      throw new Error('SMTP block: not yet implemented in ce-builder-studio. Configure SMTP_HOST, SMTP_USER, SMTP_PASS environment variables.');
 
     case 'postgresql':
-      return { error: 'PostgreSQL requires server-side execution via convengine' };
+      throw new Error('PostgreSQL block: not yet implemented in ce-builder-studio. Configure DATABASE_URL environment variable.');
 
     case 'redis':
-      return { error: 'Redis requires server-side execution via convengine' };
+      throw new Error('Redis block: not yet implemented in ce-builder-studio. Configure REDIS_URL environment variable.');
 
     case 'mongodb':
-      return { error: 'MongoDB requires server-side execution via convengine' };
+      throw new Error('MongoDB block: not yet implemented in ce-builder-studio. Configure MONGODB_URI environment variable.');
 
     case 'schedule':
-      return { firedAt: new Date().toISOString() };
-
     case 'webhook_request':
-      return { body: input, headers: {}, query: {} };
+      // These are seed nodes — their output is pre-populated in the seeding loop above.
+      // The runNode switch is never actually reached for them; this is a safety fallthrough.
+      return outputs[node.id] ?? input;
 
     case 'variables':
       return runVariablesNode({ values });
@@ -1129,11 +1131,11 @@ async function runNode(opts: {
       return await runRouterV2Node({ node, values, input });
 
     case 'loop':
+      throw new Error('Loop block: loop execution is not yet implemented in ce-builder-studio.');
     case 'parallel':
-      return input;
-
+      throw new Error('Parallel block: parallel branch execution is not yet implemented in ce-builder-studio.');
     case 'table':
-      return input;
+      throw new Error('Table block: requires database connection configuration in ce-builder-studio.');
     case 'mapper':
       return runMapperNode({ values, input });
 
@@ -1225,7 +1227,7 @@ export async function executeGraph(opts: {
     outgoingAll[e.source].push(e);
   }
   const seedIds = nodes
-    .filter((n) => n.data?.blockType === 'starter' || n.data?.blockType === 'user_input')
+    .filter((n) => ['starter', 'user_input', 'schedule', 'webhook_request'].includes(n.data?.blockType as string))
     .map((n) => n.id);
   const bfsQueue = [...seedIds];
   for (const id of bfsQueue) {
@@ -1243,7 +1245,7 @@ export async function executeGraph(opts: {
   }
 
   // ── Validate: non-seed nodes must be reachable from Start ────────────
-  const seedTypes = new Set(['starter', 'user_input']);
+  const seedTypes = new Set(['starter', 'user_input', 'schedule', 'webhook_request']);
   for (const n of nodes) {
     if (seedTypes.has(n.data?.blockType as string)) continue;
     if (disabledIds.has(n.id)) continue;
@@ -1312,6 +1314,16 @@ export async function executeGraph(opts: {
         ms: 0,
         ...(chatPayload ? { meta: { source: 'chat message' } } : {}),
       });
+    } else if (blockType === 'schedule') {
+      const firedAt = new Date().toISOString();
+      outputs[n.id] = { firedAt };
+      started.add(n.id);
+      trace.push({ nodeId: n.id, blockType, title: n.data?.title, input: null, output: outputs[n.id], ms: 0 });
+    } else if (blockType === 'webhook_request') {
+      const webhookPayload = (inputs as Record<string, unknown>).__webhook__ ?? null;
+      outputs[n.id] = { body: webhookPayload, headers: {}, query: {} };
+      started.add(n.id);
+      trace.push({ nodeId: n.id, blockType, title: n.data?.title, input: null, output: outputs[n.id], ms: 0 });
     }
   }
 
