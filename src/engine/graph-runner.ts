@@ -91,17 +91,72 @@ function checkValueType(value: unknown, expectedType: string): string | null {
 // Used for runtime type resolution when _portTypes has no user override.
 interface PortDef { key: string; type: string }
 const CARD_PORT_DEFAULTS: Record<string, { inputs: PortDef[]; outputs: PortDef[] }> = {
+  // Triggers
+  starter:       { inputs: [], outputs: [] },
+  user_input:    { inputs: [], outputs: [{ key: 'value', type: 'any' }] },
+  schedule:      { inputs: [], outputs: [{ key: 'firedAt', type: 'string' }] },
+  webhook_request: { inputs: [], outputs: [{ key: 'body', type: 'json' }, { key: 'headers', type: 'json' }, { key: 'query', type: 'json' }] },
+  variables:     { inputs: [], outputs: [] },
+  // Core
   agent:         { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'data', type: 'string' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
   function:      { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'json' }] },
   response:      { inputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }], outputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
-  api:           { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
+  // MCP — wire any node to `input`; that value becomes the tool arguments
+  mcp:           { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'content', type: 'array' }] },
+  // API
+  api:           { inputs: [{ key: 'input', type: 'json' }, { key: 'body', type: 'json' }], outputs: [{ key: 'data', type: 'json' }, { key: 'status', type: 'number' }, { key: 'headers', type: 'json' }] },
+  // Data
   mapper:        { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }] },
-  filter:        { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'kept', type: 'json' }, { key: 'rejected', type: 'json' }] },
+  skill:         { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }] },
+  text_template: { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'string' }] },
+  json_map:      { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'json' }] },
+  json_path:     { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'json' }] },
+  // Collections
+  filter:        { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'kept', type: 'json' }, { key: 'rejected', type: 'json' }, { key: 'count', type: 'number' }] },
+  sort:          { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'sorted', type: 'json' }, { key: 'count', type: 'number' }] },
+  aggregate:     { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'any' }, { key: 'count', type: 'number' }] },
   merge:         { inputs: [{ key: 'input1', type: 'any' }, { key: 'input2', type: 'any' }], outputs: [{ key: 'merged', type: 'json' }] },
+  // Control flow
+  if_else:       { inputs: [{ key: 'input', type: 'json' }], outputs: [] },
+  if_elseif_else:{ inputs: [{ key: 'input', type: 'json' }], outputs: [] },
+  switch:        { inputs: [{ key: 'input', type: 'json' }], outputs: [] },
+  condition:     { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'conditionResult', type: 'boolean' }, { key: 'selectedPath', type: 'json' }] },
+  for_loop:      { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'iterations', type: 'array' }, { key: 'last', type: 'json' }] },
+  for_each:      { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'iterations', type: 'array' }, { key: 'last', type: 'json' }] },
+  loop:          { inputs: [{ key: 'collection', type: 'json' }], outputs: [{ key: 'results', type: 'array' }, { key: 'iterations', type: 'number' }] },
+  parallel:      { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'results', type: 'array' }, { key: 'winner', type: 'json' }] },
+  router_v2:     { inputs: [{ key: 'context', type: 'string' }], outputs: [{ key: 'selectedRoute', type: 'string' }, { key: 'reasoning', type: 'string' }] },
+  // Utility
+  delay:         { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'output', type: 'any' }, { key: 'elapsed', type: 'number' }] },
+  wait:          { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'output', type: 'any' }, { key: 'elapsed', type: 'number' }] },
+  crypto:        { inputs: [{ key: 'data', type: 'string' }], outputs: [{ key: 'result', type: 'string' }] },
+  save_to_files: { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'savedAt', type: 'string' }, { key: 'bytes', type: 'number' }] },
   error_handler: { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }, { key: 'error', type: 'json' }] },
+  // HTTP / Messaging
+  http_response: { inputs: [{ key: 'body', type: 'any' }, { key: 'statusCode', type: 'number' }, { key: 'headers', type: 'json' }], outputs: [{ key: 'sent', type: 'boolean' }] },
+  smtp:          { inputs: [{ key: 'body', type: 'string' }, { key: 'to', type: 'string' }, { key: 'subject', type: 'string' }], outputs: [{ key: 'success', type: 'boolean' }, { key: 'messageId', type: 'string' }] },
+  // AI
   ai_classifier: { inputs: [{ key: 'input', type: 'string' }], outputs: [{ key: 'category', type: 'string' }, { key: 'confidence', type: 'number' }] },
-  user_input:    { inputs: [], outputs: [{ key: 'value', type: 'any' }] },
+  // Preview
+  show_preview:  { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'payload', type: 'any' }] },
+  // Sub-workflow / DB
+  sub_workflow:  { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'any' }, { key: 'status', type: 'string' }] },
+  table:         { inputs: [{ key: 'data', type: 'json' }], outputs: [{ key: 'rows', type: 'array' }, { key: 'count', type: 'number' }] },
+  postgresql:    { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'rows', type: 'array' }, { key: 'rowCount', type: 'number' }, { key: 'message', type: 'string' }] },
+  mongodb:       { inputs: [{ key: 'input', type: 'json' }], outputs: [{ key: 'result', type: 'json' }, { key: 'count', type: 'number' }, { key: 'insertedId', type: 'string' }] },
+  redis:         { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }, { key: 'success', type: 'boolean' }] },
+  slack:         { inputs: [{ key: 'input', type: 'string' }], outputs: [{ key: 'ok', type: 'boolean' }, { key: 'ts', type: 'string' }] },
 };
+
+function hasCardInputs(blockType: string): boolean {
+  const def = CARD_PORT_DEFAULTS[blockType];
+  return def ? def.inputs.length > 0 : true;
+}
+
+function hasCardOutputs(blockType: string): boolean {
+  const def = CARD_PORT_DEFAULTS[blockType];
+  return def ? def.outputs.length > 0 : true;
+}
 
 function resolvePortTypeTS(
   nodeId: string,
@@ -274,25 +329,12 @@ async function runMcpNode(opts: {
   const serverId = String(values.server || '');
   const tool = String(values.tool || '');
 
+  // `input` is whatever the upstream node produced — use it directly as tool args.
   let args: Record<string, unknown> = {};
-  const rawArgs = values.arguments || values.args;
-  if (typeof rawArgs === 'string') {
-    try {
-      const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
-      args = JSON.parse(rawArgs.replace(/\{\{input\}\}/g, inputStr));
-    } catch {
-      args = {};
-    }
-  } else if (rawArgs && typeof rawArgs === 'object') {
-    args = rawArgs as Record<string, unknown>;
-  }
-
-  // Substitute {{input}} in string values
-  for (const [k, v] of Object.entries(args)) {
-    if (typeof v === 'string') {
-      const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
-      args[k] = v.replace(/\{\{input\}\}/g, inputStr);
-    }
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    args = input as Record<string, unknown>;
+  } else if (typeof input === 'string' && input.trim()) {
+    try { args = JSON.parse(input); } catch { args = {}; }
   }
 
   const resp = await callTool(serverId, tool, args);
@@ -528,10 +570,15 @@ function runMapperNode(opts: {
 async function runApiNode(opts: {
   values: Record<string, unknown>;
   input: unknown;
+  inputsByHandle?: Record<string, unknown>;
 }): Promise<unknown> {
-  const { values, input } = opts;
+  const { values, input, inputsByHandle } = opts;
   const method = String(values.method || 'GET').toUpperCase();
-  let url = String(values.url || '');
+  const inputStr = input !== undefined ? (typeof input === 'string' ? input : JSON.stringify(input ?? '')) : '';
+  const substitute = (s: string) => (inputStr ? s.replace(/\{\{\s*input\s*\}\}/g, inputStr) : s);
+
+  let url = substitute(String(values.url || ''));
+  if (inputsByHandle?.url != null) url = String(inputsByHandle.url);
 
   // Build query params
   let params: Array<{ Key?: string; Value?: string }> = [];
@@ -560,14 +607,22 @@ async function runApiNode(opts: {
     if (h.Key) headers[h.Key] = String(h.Value ?? '');
   }
 
-  // Build body
+  // Build body: wired `body` port > wired `input` port > static field with {{input}} substitution
   let body: string | undefined;
   if (method !== 'GET' && method !== 'HEAD') {
-    const rawBody = values.body;
-    if (typeof rawBody === 'string' && rawBody.trim()) {
-      body = rawBody;
-      if (!headers['Content-Type'] && !headers['content-type']) {
-        headers['Content-Type'] = 'application/json';
+    if (inputsByHandle?.body != null) {
+      const wb = inputsByHandle.body;
+      body = typeof wb === 'string' ? wb : JSON.stringify(wb);
+      if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json';
+    } else if (inputsByHandle?.input != null) {
+      const wi = inputsByHandle.input;
+      body = typeof wi === 'string' ? wi : JSON.stringify(wi);
+      if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json';
+    } else {
+      const rawBody = substitute(String(values.body ?? ''));
+      if (rawBody.trim()) {
+        body = rawBody;
+        if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json';
       }
     }
   }
@@ -591,8 +646,9 @@ async function runApiNode(opts: {
 
 async function runDelayNode(opts: {
   values: Record<string, unknown>;
+  input: unknown;
 }): Promise<{ output: unknown; elapsed: number }> {
-  const { values } = opts;
+  const { values, input } = opts;
   const duration = Number(values.duration ?? 0);
   const unit = String(values.unit || 'ms');
   let ms = duration;
@@ -601,7 +657,7 @@ async function runDelayNode(opts: {
   else if (unit === 'h') ms = duration * 3_600_000;
   const t0 = Date.now();
   await new Promise((resolve) => setTimeout(resolve, ms));
-  return { output: null, elapsed: Date.now() - t0 };
+  return { output: input ?? null, elapsed: Date.now() - t0 };
 }
 
 async function runWaitNode(opts: {
@@ -804,10 +860,14 @@ function runMergeNode(opts: {
 
 function runCryptoNode(opts: {
   values: Record<string, unknown>;
+  input: unknown;
 }): { result: string } {
-  const { values } = opts;
+  const { values, input } = opts;
   const operation = String(values.operation || 'sha256');
-  const data = String(values.data ?? '');
+  // A wired `data` port overrides the static subBlock value.
+  const data = String(
+    input != null ? (typeof input === 'string' ? input : JSON.stringify(input)) : (values.data ?? '')
+  );
   const secret = String(values.secret ?? '');
 
   switch (operation) {
@@ -849,14 +909,16 @@ function runErrorHandlerNode(opts: {
 function runHttpResponseNode(opts: {
   values: Record<string, unknown>;
   input: unknown;
-}): { sent: boolean; statusCode: number; body: unknown } {
-  const { values, input } = opts;
-  const statusCode = Number(values.statusCode ?? 200);
-  let body: unknown = input;
-  if (values.body !== undefined && values.body !== '') {
-    body = values.body;
-  }
-  return { sent: true, statusCode, body };
+  inputsByHandle?: Record<string, unknown>;
+}): { sent: boolean; statusCode: number; body: unknown; headers: unknown } {
+  const { values, input, inputsByHandle } = opts;
+  const statusCode = Number((inputsByHandle?.statusCode ?? values.statusCode) ?? 200);
+  const rawHeaders = inputsByHandle?.headers ?? values.headers ?? {};
+  // Priority: wired `body` port > static field > upstream input
+  const body = (inputsByHandle?.body !== undefined)
+    ? inputsByHandle.body
+    : ((values.body !== undefined && values.body !== '') ? values.body : input);
+  return { sent: true, statusCode, body, headers: rawHeaders };
 }
 
 function runSubWorkflowNode(opts: {
@@ -1065,10 +1127,10 @@ async function runNode(opts: {
       return input;
 
     case 'api':
-      return await runApiNode({ values, input });
+      return await runApiNode({ values, input, inputsByHandle });
 
     case 'delay':
-      return await runDelayNode({ values });
+      return await runDelayNode({ values, input });
 
     case 'wait':
       return await runWaitNode({ values, input });
@@ -1086,13 +1148,13 @@ async function runNode(opts: {
       return runMergeNode({ values, input });
 
     case 'crypto':
-      return runCryptoNode({ values });
+      return runCryptoNode({ values, input });
 
     case 'error_handler':
       return runErrorHandlerNode({ values, input });
 
     case 'http_response':
-      return runHttpResponseNode({ values, input });
+      return runHttpResponseNode({ values, input, inputsByHandle });
 
     case 'sub_workflow':
       return runSubWorkflowNode({ values, input });
@@ -1286,7 +1348,17 @@ export async function executeGraph(opts: {
   // Seed starter and user_input nodes.
   // Use key-presence checks so falsy typed values (false, 0, '') are preserved.
   for (const n of nodes) {
-    const blockType = n.data?.blockType;
+    const blockType = n.data?.blockType as string;
+    if (!['starter', 'user_input', 'schedule', 'webhook_request'].includes(blockType)) continue;
+
+    // Disabled seed node → produce null, mark started, skip core logic
+    if (disabledIds.has(n.id)) {
+      outputs[n.id] = null;
+      started.add(n.id);
+      trace.push({ nodeId: n.id, blockType, title: n.data?.title, input: null, output: null, ms: 0, meta: { skipped: true, reason: 'Node is disabled' } });
+      continue;
+    }
+
     if (blockType === 'user_input') {
       const hasInput = Object.prototype.hasOwnProperty.call(inputs || {}, n.id);
       outputs[n.id] = hasInput ? inputs[n.id] : null;
@@ -1394,16 +1466,24 @@ export async function executeGraph(opts: {
 
         const t0 = Date.now();
         try {
-          // ── Disabled node: pass-through input → output (ComfyUI-style) ──
+          // ── Disabled node: skip or pass-through based on port presence ──
+          // Rule 1: no inputs OR no outputs → skip entirely (produce null)
+          // Rule 2: both inputs AND outputs → pass input through without
+          //         running core logic. Empty input (e.g. from Starter) → null.
           if (disabledIds.has(n.id)) {
-            outputs[n.id] = input;
+            const bt = blockType as string;
+            const passValue = (hasCardInputs(bt) && hasCardOutputs(bt)) ? (input ?? null) : null;
+            outputs[n.id] = passValue;
             trace.push({
               nodeId: n.id,
-              blockType: blockType as string,
+              blockType: bt,
               title: title as string,
               input,
-              output: input,
+              output: passValue,
               ms: Date.now() - t0,
+              meta: (hasCardInputs(bt) && hasCardOutputs(bt))
+                ? { passThrough: true, reason: 'Node is disabled' }
+                : { skipped: true, reason: 'Node is disabled (no pass-through — requires both input and output ports)' },
             });
             return;
           }
