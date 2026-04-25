@@ -100,7 +100,7 @@ const CARD_PORT_DEFAULTS: Record<string, { inputs: PortDef[]; outputs: PortDef[]
   merge:         { inputs: [{ key: 'input1', type: 'any' }, { key: 'input2', type: 'any' }], outputs: [{ key: 'merged', type: 'json' }] },
   error_handler: { inputs: [{ key: 'input', type: 'any' }], outputs: [{ key: 'result', type: 'any' }, { key: 'error', type: 'json' }] },
   ai_classifier: { inputs: [{ key: 'input', type: 'string' }], outputs: [{ key: 'category', type: 'string' }, { key: 'confidence', type: 'number' }] },
-  user_input:    { inputs: [], outputs: [{ key: 'value', type: 'string' }] },
+  user_input:    { inputs: [], outputs: [{ key: 'value', type: 'any' }] },
 };
 
 function resolvePortTypeTS(
@@ -1503,7 +1503,26 @@ export async function executeGraph(opts: {
           });
         } catch (err) {
           const ms = Date.now() - t0;
-          const errorMsg = (err as Error).message || String(err);
+          const e = err as Error & { [k: string]: unknown };
+          const errorMsg = (e.message as string | undefined) || String(err);
+          const errorDetail: Record<string, unknown> = {
+            message: errorMsg,
+            nodeId: n.id,
+            nodeTitle: title,
+            blockType,
+            timestamp: new Date().toISOString(),
+          };
+          if (e.url)             errorDetail.url             = e.url;
+          if (e.resolvedUrl)     errorDetail.resolvedUrl     = e.resolvedUrl;
+          if (e.method)          errorDetail.method          = e.method;
+          if (e.status)          errorDetail.status          = e.status;
+          if (e.statusText)      errorDetail.statusText      = e.statusText;
+          if (e.responseBody)    errorDetail.responseBody    = e.responseBody;
+          if (e.responseHeaders) errorDetail.responseHeaders = e.responseHeaders;
+          if (e.requestHeaders)  errorDetail.requestHeaders  = e.requestHeaders;
+          if (e.requestPayload)  errorDetail.requestPayload  = e.requestPayload;
+          if (e.stack)           errorDetail.stack           = e.stack;
+          if (e.cause)           errorDetail.cause           = (e.cause as Error).message || String(e.cause);
           trace.push({
             nodeId: n.id,
             blockType,
@@ -1511,7 +1530,7 @@ export async function executeGraph(opts: {
             input,
             inputsByHandle,
             error: errorMsg,
-            errorDetail: { stack: (err as Error).stack },
+            errorDetail,
             ms,
           });
           throw err;
